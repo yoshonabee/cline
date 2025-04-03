@@ -9,6 +9,7 @@ import { DIFF_VIEW_URI_SCHEME } from "./integrations/editor/DiffViewProvider"
 import assert from "node:assert"
 import { telemetryService } from "./services/telemetry/TelemetryService"
 import { WebviewProvider } from "./core/webview"
+import { HttpServerService } from "./services/http/HttpServerService"
 
 /*
 Built using https://github.com/microsoft/vscode-webview-ui-toolkit
@@ -20,6 +21,7 @@ https://github.com/microsoft/vscode-webview-ui-toolkit-samples/tree/main/framewo
 */
 
 let outputChannel: vscode.OutputChannel
+let httpServerService: HttpServerService | null = null
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -33,6 +35,51 @@ export function activate(context: vscode.ExtensionContext) {
 	const sidebarWebview = new WebviewProvider(context, outputChannel)
 
 	vscode.commands.executeCommand("setContext", "cline.isDevMode", IS_DEV && IS_DEV === "true")
+
+	// Initialize and start HTTP server
+	httpServerService = new HttpServerService(new WeakRef(sidebarWebview.controller))
+	httpServerService.start().catch((error) => {
+		Logger.log(`Failed to start HTTP server: ${error}`)
+	})
+
+	// Register settings change listener
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration(async (e) => {
+			if (e.affectsConfiguration("cline.http")) {
+				// Restart the HTTP server when settings change
+				if (httpServerService) {
+					try {
+						await httpServerService.restart()
+					} catch (error) {
+						Logger.log(`Failed to restart HTTP server: ${error}`)
+					}
+				}
+			}
+		}),
+	)
+
+	// Register command to generate JWT token
+	context.subscriptions.push(
+		vscode.commands.registerCommand("cline.generateHttpToken", () => {
+			if (!httpServerService) {
+				vscode.window.showErrorMessage("HTTP server is not initialized")
+				return
+			}
+
+			const token = httpServerService.generateToken()
+
+			// Show the token to the user
+			vscode.window.showInformationMessage("API token generated", {
+				detail: "Token has been copied to clipboard",
+				modal: true,
+			})
+
+			// Copy the token to clipboard
+			vscode.env.clipboard.writeText(token)
+
+			return token
+		}),
+	)
 
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(WebviewProvider.sideBarId, sidebarWebview, {
@@ -385,6 +432,14 @@ export function activate(context: vscode.ExtensionContext) {
 
 // This method is called when your extension is deactivated
 export function deactivate() {
+	// Shut down the HTTP server
+	if (httpServerService) {
+		httpServerService.stop().catch((error) => {
+			Logger.log(`Error stopping HTTP server: ${error}`)
+		})
+		httpServerService = null
+	}
+
 	telemetryService.shutdown()
 	Logger.log("Cline extension deactivated")
 }

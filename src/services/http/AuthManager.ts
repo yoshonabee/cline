@@ -41,11 +41,18 @@ export class AuthManager {
 	/**
 	 * Validates a JWT token
 	 * @param token The token to validate
-	 * @returns True if the token is valid, false otherwise
+	 * @returns boolean indicating if the token is valid
 	 */
 	validateToken(token: string): boolean {
 		try {
-			jwt.verify(token, this.secret)
+			const decoded = jwt.verify(token, this.secret) as JwtPayload
+			const now = Math.floor(Date.now() / 1000)
+
+			// Check if token has expired
+			if (decoded.exp && decoded.exp < now) {
+				return false
+			}
+
 			return true
 		} catch (error) {
 			return false

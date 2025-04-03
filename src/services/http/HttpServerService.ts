@@ -2,6 +2,8 @@ import express from "express"
 import * as http from "http"
 import cors from "cors"
 import helmet from "helmet"
+import { WebSocket } from "ws"
+import type { Server as WebSocketServer } from "ws"
 import { Controller } from "../../core/controller"
 import { AuthManager } from "./AuthManager"
 import { HttpController } from "./HttpController"
@@ -13,6 +15,7 @@ import * as vscode from "vscode"
  */
 export class HttpServerService {
 	private server: http.Server | null = null
+	private wss: WebSocketServer | null = null
 	private app: express.Application
 	private authManager: AuthManager
 	private httpController: HttpController
@@ -71,6 +74,64 @@ export class HttpServerService {
 		// Create and start the server
 		this.server = http.createServer(this.app)
 
+		if (!this.server) {
+			throw new Error("Failed to create HTTP server")
+		}
+
+		// Initialize WebSocket server
+		const WebSocketServerImpl = require("ws").Server
+		this.wss = new WebSocketServerImpl({ server: this.server })
+
+		if (!this.wss) {
+			throw new Error("Failed to create WebSocket server")
+		}
+
+		// Handle WebSocket connections
+		this.wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
+			try {
+				// Extract session ID from URL query parameters
+				const url = new URL(req.url || "", `http://${req.headers.host}`)
+				const sessionId = url.searchParams.get("sessionId")
+
+				if (!sessionId) {
+					ws.close(1002, "Session ID is required")
+					return
+				}
+
+				// Extract and validate token from headers
+				const authHeader = req.headers["authorization"]
+				if (!authHeader || !authHeader.startsWith("Bearer ")) {
+					ws.close(1002, "Authorization header with Bearer token is required")
+					return
+				}
+
+				const token = authHeader.substring(7)
+				if (!this.authManager.validateToken(token)) {
+					ws.close(1002, "Invalid or expired token")
+					return
+				}
+
+				// Add client to session
+				this.httpController.addWebSocketClient(sessionId, ws)
+				Logger.log(`WebSocket client connected for session ${sessionId}`)
+
+				// Handle client disconnect
+				ws.on("close", () => {
+					this.httpController.removeWebSocketClient(sessionId, ws)
+					Logger.log(`WebSocket client disconnected from session ${sessionId}`)
+				})
+
+				// Handle errors
+				ws.on("error", (error) => {
+					Logger.log(`WebSocket error for session ${sessionId}: ${error}`)
+					ws.close(1011, "Internal server error")
+				})
+			} catch (error) {
+				Logger.log(`WebSocket connection error: ${error}`)
+				ws.close(1011, "Internal server error")
+			}
+		})
+
 		return new Promise((resolve, reject) => {
 			if (!this.server) {
 				reject(new Error("Server was not properly initialized"))
@@ -94,6 +155,13 @@ export class HttpServerService {
 	 */
 	async stop(): Promise<void> {
 		return new Promise((resolve) => {
+			if (this.wss) {
+				this.wss.close(() => {
+					Logger.log("WebSocket server stopped")
+				})
+				this.wss = null
+			}
+
 			if (!this.server) {
 				resolve()
 				return

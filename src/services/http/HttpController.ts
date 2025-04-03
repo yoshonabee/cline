@@ -2,20 +2,32 @@ import { Request, Response, Router } from "express"
 import { AuthManager } from "./AuthManager"
 import { Controller } from "../../core/controller"
 import { WebviewProvider } from "../../core/webview"
+import * as vscode from "vscode"
 import {
 	TaskCreationRequest,
 	TaskCreationResponse,
 	ToolExecutionRequest,
 	ToolExecutionResponse,
 	TaskStatusResponse,
+	CreateChatRequest,
+	CreateChatResponse,
+	ChatMessageRequest,
+	ChatMessageResponse,
+	ChatSessionResponse,
+	ChatStatusResponse,
+	ChatSession,
+	ChatMessage,
 } from "../../shared/HttpServerTypes"
 import { Logger } from "../../services/logging/Logger"
+import { WebSocket } from "ws"
 
 /**
  * Handles HTTP API requests and routes them to the appropriate controller methods.
  */
 export class HttpController {
 	private router: Router
+	private chatSessions: Map<string, ChatSession> = new Map()
+	private wsClients: Map<string, Set<WebSocket>> = new Map()
 
 	constructor(
 		private controllerRef: WeakRef<Controller>,
@@ -42,8 +54,18 @@ export class HttpController {
 		// Generate token endpoint (only accessible from localhost)
 		this.router.get("/api/token", this.generateToken.bind(this))
 
-		// Authenticated endpoints
-		this.router.post("/api/tasks/new", this.authMiddleware.bind(this), this.createTask.bind(this))
+		// Chat endpoints
+		this.router.post("/api/chat/sessions", this.authMiddleware.bind(this), this.createChatSession.bind(this))
+		this.router.post(
+			"/api/chat/sessions/:sessionId/messages",
+			this.authMiddleware.bind(this),
+			this.sendChatMessage.bind(this),
+		)
+		this.router.get("/api/chat/sessions/:sessionId", this.authMiddleware.bind(this), this.getChatSession.bind(this))
+		this.router.get("/api/chat/sessions/:sessionId/status", this.authMiddleware.bind(this), this.getChatStatus.bind(this))
+
+		// Existing endpoints
+		this.router.post("/api/tasks", this.authMiddleware.bind(this), this.createTask.bind(this))
 		this.router.post("/api/tools/execute", this.authMiddleware.bind(this), this.executeTools.bind(this))
 		this.router.get("/api/tasks/:id", this.authMiddleware.bind(this), this.getTaskStatus.bind(this))
 	}
@@ -254,7 +276,252 @@ export class HttpController {
 			})
 		}
 	}
-}
 
-// Add this for type completion in VSCode
-import * as vscode from "vscode"
+	/**
+	 * Create a new chat session
+	 */
+	private async createChatSession(req: Request, res: Response) {
+		try {
+			const controller = this.controllerRef.deref()
+			if (!controller) {
+				res.status(500).json({ error: "Controller not available" })
+				return
+			}
+
+			const chatRequest = req.body as CreateChatRequest
+			if (!chatRequest || !chatRequest.text) {
+				res.status(400).json({ error: "Missing required field: text" })
+				return
+			}
+
+			// Get a visible webview instance
+			const visibleWebview = WebviewProvider.getVisibleInstance()
+			if (!visibleWebview) {
+				res.status(500).json({ error: "No visible Cline instance available" })
+				return
+			}
+
+			// Create a new session
+			const sessionId = Math.random().toString(36).substring(2, 15)
+			const now = new Date().toISOString()
+			const session: ChatSession = {
+				id: sessionId,
+				messages: [],
+				status: "active",
+				createdAt: now,
+				updatedAt: now,
+			}
+
+			// Add initial message
+			const message: ChatMessage = {
+				type: "user",
+				content: chatRequest.text,
+				timestamp: now,
+				images: chatRequest.images,
+			}
+			session.messages.push(message)
+
+			// Store the session
+			this.chatSessions.set(sessionId, session)
+
+			// Send message to webview
+			await visibleWebview.controller.handleWebviewMessage({
+				type: "askResponse",
+				text: chatRequest.text,
+				images: chatRequest.images,
+			})
+
+			const response: CreateChatResponse = {
+				sessionId,
+				status: "created",
+			}
+
+			Logger.log(`HTTP API: Created chat session ${sessionId}`)
+			res.status(201).json(response)
+		} catch (error) {
+			Logger.log(`HTTP API Error: ${error}`)
+			res.status(500).json({ error: "Internal server error" })
+		}
+	}
+
+	/**
+	 * Send a message in an existing chat session
+	 */
+	private async sendChatMessage(req: Request, res: Response) {
+		try {
+			const controller = this.controllerRef.deref()
+			if (!controller) {
+				res.status(500).json({ error: "Controller not available" })
+				return
+			}
+
+			const sessionId = req.params.sessionId
+			const messageRequest = req.body as ChatMessageRequest
+
+			if (!messageRequest || !messageRequest.text) {
+				res.status(400).json({ error: "Missing required field: text" })
+				return
+			}
+
+			const session = this.chatSessions.get(sessionId)
+			if (!session) {
+				res.status(404).json({ error: "Chat session not found" })
+				return
+			}
+
+			// Get a visible webview instance
+			const visibleWebview = WebviewProvider.getVisibleInstance()
+			if (!visibleWebview) {
+				res.status(500).json({ error: "No visible Cline instance available" })
+				return
+			}
+
+			// Send message to webview
+			await visibleWebview.controller.handleWebviewMessage({
+				type: "askResponse",
+				text: messageRequest.text,
+				images: messageRequest.images,
+			})
+
+			// Add message to session
+			const message: ChatMessage = {
+				type: "user",
+				content: messageRequest.text,
+				timestamp: new Date().toISOString(),
+				images: messageRequest.images,
+			}
+			session.messages.push(message)
+
+			// Notify WebSocket clients
+			const clients = this.wsClients.get(sessionId)
+			if (clients) {
+				const messageResponse: ChatMessageResponse = {
+					sessionId,
+					message,
+				}
+				clients.forEach((client) => {
+					if (client.readyState === WebSocket.OPEN) {
+						client.send(JSON.stringify(messageResponse))
+					}
+				})
+			}
+
+			res.status(200).json({ status: "sent" })
+		} catch (error) {
+			Logger.log(`HTTP API Error: ${error}`)
+			res.status(500).json({ error: "Internal server error" })
+		}
+	}
+
+	/**
+	 * Get chat session details
+	 */
+	private async getChatSession(req: Request, res: Response) {
+		try {
+			const sessionId = req.params.sessionId
+			const session = this.chatSessions.get(sessionId)
+
+			if (!session) {
+				res.status(404).json({ error: "Chat session not found" })
+				return
+			}
+
+			const response: ChatSessionResponse = {
+				session,
+			}
+
+			res.json(response)
+		} catch (error) {
+			Logger.log(`HTTP API Error: ${error}`)
+			res.status(500).json({ error: "Internal server error" })
+		}
+	}
+
+	/**
+	 * Get chat session status
+	 */
+	private async getChatStatus(req: Request, res: Response) {
+		try {
+			const sessionId = req.params.sessionId
+			const session = this.chatSessions.get(sessionId)
+
+			if (!session) {
+				res.status(404).json({ error: "Chat session not found" })
+				return
+			}
+
+			const response: ChatStatusResponse = {
+				status: session.status,
+				lastMessage: session.messages[session.messages.length - 1],
+			}
+
+			res.json(response)
+		} catch (error) {
+			Logger.log(`HTTP API Error: ${error}`)
+			res.status(500).json({ error: "Internal server error" })
+		}
+	}
+
+	/**
+	 * Handle WebSocket connection for a chat session
+	 */
+	handleWebSocket(ws: WebSocket, sessionId: string) {
+		// Get or create client set for this session
+		let clients = this.wsClients.get(sessionId)
+		if (!clients) {
+			clients = new Set()
+			this.wsClients.set(sessionId, clients)
+		}
+
+		// Add this client
+		clients.add(ws)
+
+		// Handle client disconnect
+		ws.on("close", () => {
+			clients?.delete(ws)
+			if (clients?.size === 0) {
+				this.wsClients.delete(sessionId)
+			}
+		})
+	}
+
+	/**
+	 * Notify all WebSocket clients for a session
+	 */
+	private notifySessionClients(sessionId: string, data: any) {
+		const clients = this.wsClients.get(sessionId)
+		if (clients) {
+			const message = JSON.stringify(data)
+			clients.forEach((client) => {
+				if (client.readyState === WebSocket.OPEN) {
+					client.send(message)
+				}
+			})
+		}
+	}
+
+	/**
+	 * Add a WebSocket client to a session
+	 */
+	public addWebSocketClient(sessionId: string, ws: WebSocket): void {
+		let clients = this.wsClients.get(sessionId)
+		if (!clients) {
+			clients = new Set()
+			this.wsClients.set(sessionId, clients)
+		}
+		clients.add(ws)
+	}
+
+	/**
+	 * Remove a WebSocket client from a session
+	 */
+	public removeWebSocketClient(sessionId: string, ws: WebSocket): void {
+		const clients = this.wsClients.get(sessionId)
+		if (clients) {
+			clients.delete(ws)
+			if (clients.size === 0) {
+				this.wsClients.delete(sessionId)
+			}
+		}
+	}
+}

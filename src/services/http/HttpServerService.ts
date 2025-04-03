@@ -89,11 +89,14 @@ export class HttpServerService {
 		// Handle WebSocket connections
 		this.wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
 			try {
+				Logger.log(`[${new Date().toISOString()}] WebSocket: 收到新的連接請求`)
+
 				// Extract session ID from URL query parameters
 				const url = new URL(req.url || "", `http://${req.headers.host}`)
 				const sessionId = url.searchParams.get("sessionId")
 
 				if (!sessionId) {
+					Logger.log(`[${new Date().toISOString()}] WebSocket Error: 缺少 sessionId 參數`)
 					ws.close(1002, "Session ID is required")
 					return
 				}
@@ -101,33 +104,35 @@ export class HttpServerService {
 				// Extract and validate token from headers
 				const authHeader = req.headers["authorization"]
 				if (!authHeader || !authHeader.startsWith("Bearer ")) {
+					Logger.log(`[${new Date().toISOString()}] WebSocket Error: 缺少或無效的認證 token`)
 					ws.close(1002, "Authorization header with Bearer token is required")
 					return
 				}
 
 				const token = authHeader.substring(7)
 				if (!this.authManager.validateToken(token)) {
+					Logger.log(`[${new Date().toISOString()}] WebSocket Error: token 驗證失敗`)
 					ws.close(1002, "Invalid or expired token")
 					return
 				}
 
 				// Add client to session
 				this.httpController.addWebSocketClient(sessionId, ws)
-				Logger.log(`WebSocket client connected for session ${sessionId}`)
+				Logger.log(`[${new Date().toISOString()}] WebSocket: 客戶端已連接到會話 ${sessionId}`)
 
 				// Handle client disconnect
 				ws.on("close", () => {
 					this.httpController.removeWebSocketClient(sessionId, ws)
-					Logger.log(`WebSocket client disconnected from session ${sessionId}`)
+					Logger.log(`[${new Date().toISOString()}] WebSocket: 客戶端已從會話 ${sessionId} 斷開連接`)
 				})
 
 				// Handle errors
 				ws.on("error", (error) => {
-					Logger.log(`WebSocket error for session ${sessionId}: ${error}`)
+					Logger.log(`[${new Date().toISOString()}] WebSocket Error: 會話 ${sessionId} 發生錯誤: ${error}`)
 					ws.close(1011, "Internal server error")
 				})
 			} catch (error) {
-				Logger.log(`WebSocket connection error: ${error}`)
+				Logger.log(`[${new Date().toISOString()}] WebSocket Error: ${error}`)
 				ws.close(1011, "Internal server error")
 			}
 		})

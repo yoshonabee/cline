@@ -284,19 +284,24 @@ export class HttpController {
 		try {
 			const controller = this.controllerRef.deref()
 			if (!controller) {
+				Logger.log(`[${new Date().toISOString()}] HTTP API Error: Controller not available`)
 				res.status(500).json({ error: "Controller not available" })
 				return
 			}
 
 			const chatRequest = req.body as CreateChatRequest
 			if (!chatRequest || !chatRequest.text) {
+				Logger.log(`[${new Date().toISOString()}] HTTP API Error: Missing required field: text`)
 				res.status(400).json({ error: "Missing required field: text" })
 				return
 			}
 
+			Logger.log(`[${new Date().toISOString()}] HTTP API: 收到新的聊天請求: ${chatRequest.text}`)
+
 			// Get a visible webview instance
 			const visibleWebview = WebviewProvider.getVisibleInstance()
 			if (!visibleWebview) {
+				Logger.log(`[${new Date().toISOString()}] HTTP API Error: No visible Cline instance available`)
 				res.status(500).json({ error: "No visible Cline instance available" })
 				return
 			}
@@ -324,22 +329,21 @@ export class HttpController {
 			// Store the session
 			this.chatSessions.set(sessionId, session)
 
-			// Send message to webview
-			await visibleWebview.controller.handleWebviewMessage({
-				type: "askResponse",
-				text: chatRequest.text,
-				images: chatRequest.images,
-			})
+			Logger.log(`[${new Date().toISOString()}] HTTP API: 創建新的聊天會話 ${sessionId}`)
+
+			// Initialize task with the message
+			await visibleWebview.controller.initClineWithTask(chatRequest.text, chatRequest.images)
+			Logger.log(`[${new Date().toISOString()}] HTTP API: 已初始化任務: ${chatRequest.text}`)
 
 			const response: CreateChatResponse = {
 				sessionId,
 				status: "created",
 			}
 
-			Logger.log(`HTTP API: Created chat session ${sessionId}`)
+			Logger.log(`[${new Date().toISOString()}] HTTP API: 聊天會話 ${sessionId} 創建成功`)
 			res.status(201).json(response)
 		} catch (error) {
-			Logger.log(`HTTP API Error: ${error}`)
+			Logger.log(`[${new Date().toISOString()}] HTTP API Error: ${error}`)
 			res.status(500).json({ error: "Internal server error" })
 		}
 	}
@@ -351,6 +355,7 @@ export class HttpController {
 		try {
 			const controller = this.controllerRef.deref()
 			if (!controller) {
+				Logger.log(`[${new Date().toISOString()}] HTTP API Error: Controller not available`)
 				res.status(500).json({ error: "Controller not available" })
 				return
 			}
@@ -359,12 +364,16 @@ export class HttpController {
 			const messageRequest = req.body as ChatMessageRequest
 
 			if (!messageRequest || !messageRequest.text) {
+				Logger.log(`[${new Date().toISOString()}] HTTP API Error: Missing required field: text`)
 				res.status(400).json({ error: "Missing required field: text" })
 				return
 			}
 
+			Logger.log(`[${new Date().toISOString()}] HTTP API: 收到會話 ${sessionId} 的新訊息: ${messageRequest.text}`)
+
 			const session = this.chatSessions.get(sessionId)
 			if (!session) {
+				Logger.log(`[${new Date().toISOString()}] HTTP API Error: Chat session ${sessionId} not found`)
 				res.status(404).json({ error: "Chat session not found" })
 				return
 			}
@@ -372,16 +381,19 @@ export class HttpController {
 			// Get a visible webview instance
 			const visibleWebview = WebviewProvider.getVisibleInstance()
 			if (!visibleWebview) {
+				Logger.log(`[${new Date().toISOString()}] HTTP API Error: No visible Cline instance available`)
 				res.status(500).json({ error: "No visible Cline instance available" })
 				return
 			}
 
-			// Send message to webview
+			// Send message to the existing task
 			await visibleWebview.controller.handleWebviewMessage({
 				type: "askResponse",
+				askResponse: "messageResponse",
 				text: messageRequest.text,
 				images: messageRequest.images,
 			})
+			Logger.log(`[${new Date().toISOString()}] HTTP API: 已發送訊息到現有任務: ${messageRequest.text}`)
 
 			// Add message to session
 			const message: ChatMessage = {
@@ -402,13 +414,14 @@ export class HttpController {
 				clients.forEach((client) => {
 					if (client.readyState === WebSocket.OPEN) {
 						client.send(JSON.stringify(messageResponse))
+						Logger.log(`[${new Date().toISOString()}] HTTP API: 已通過 WebSocket 發送訊息到客戶端`)
 					}
 				})
 			}
 
 			res.status(200).json({ status: "sent" })
 		} catch (error) {
-			Logger.log(`HTTP API Error: ${error}`)
+			Logger.log(`[${new Date().toISOString()}] HTTP API Error: ${error}`)
 			res.status(500).json({ error: "Internal server error" })
 		}
 	}

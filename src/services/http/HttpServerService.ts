@@ -28,6 +28,12 @@ export class HttpServerService {
 		// Initialize the controller with references to the controller and auth manager
 		this.httpController = new HttpController(controllerRef, this.authManager)
 
+		// 將 HttpController 實例傳遞給 Controller
+		const controller = controllerRef.deref()
+		if (controller) {
+			controller.setHttpController(this.httpController)
+		}
+
 		// Configure middleware
 		this.configureMiddleware()
 

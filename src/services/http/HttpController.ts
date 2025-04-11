@@ -331,6 +331,10 @@ export class HttpController {
 
 			Logger.log(`[${new Date().toISOString()}] HTTP API: 創建新的聊天會話 ${sessionId}`)
 
+			// 設置當前會話 ID 到 controller
+			controller.setCurrentSessionId(sessionId)
+			Logger.log(`[${new Date().toISOString()}] HTTP API: 已設置當前會話 ID 到 controller: ${sessionId}`)
+
 			// Initialize task with the message
 			await visibleWebview.controller.initClineWithTask(chatRequest.text, chatRequest.images)
 			Logger.log(`[${new Date().toISOString()}] HTTP API: 已初始化任務: ${chatRequest.text}`)
@@ -386,10 +390,13 @@ export class HttpController {
 				return
 			}
 
+			// 設置當前會話 ID 到 controller
+			controller.setCurrentSessionId(sessionId)
+			Logger.log(`[${new Date().toISOString()}] HTTP API: 已設置當前會話 ID 到 controller: ${sessionId}`)
+
 			// Send message to the existing task
 			await visibleWebview.controller.handleWebviewMessage({
-				type: "askResponse",
-				askResponse: "messageResponse",
+				type: "newTask",
 				text: messageRequest.text,
 				images: messageRequest.images,
 			})
@@ -535,6 +542,59 @@ export class HttpController {
 			if (clients.size === 0) {
 				this.wsClients.delete(sessionId)
 			}
+		}
+	}
+
+	// 新增: 處理 AI 回應的方法
+	public handleAssistantResponse(sessionId: string, content: string, isComplete: boolean = false) {
+		const session = this.chatSessions.get(sessionId)
+		if (!session) {
+			Logger.log(`[${new Date().toISOString()}] HTTP API Error: Chat session ${sessionId} not found`)
+			return
+		}
+
+		let message: ChatMessage
+		const lastMessage = session.messages[session.messages.length - 1]
+
+		// 如果最後一條消息是 assistant 且未完成，則更新它
+		if (lastMessage && lastMessage.type === "assistant" && !lastMessage.complete) {
+			message = lastMessage
+			message.content = content
+			message.complete = isComplete
+		} else {
+			// 否則創建新消息
+			message = {
+				type: "assistant",
+				content: content,
+				timestamp: new Date().toISOString(),
+				complete: isComplete,
+			}
+			session.messages.push(message)
+		}
+
+		// 通知 WebSocket 客戶端
+		const messageResponse: ChatMessageResponse = {
+			sessionId,
+			message,
+		}
+		this.notifySessionClients(sessionId, {
+			type: "message",
+			data: messageResponse,
+		})
+
+		// 如果消息完成，發送完成狀態
+		if (isComplete) {
+			session.status = "completed"
+			session.updatedAt = new Date().toISOString()
+
+			// 通知客戶端會話狀態更新
+			this.notifySessionClients(sessionId, {
+				type: "status",
+				data: {
+					status: "completed",
+					timestamp: session.updatedAt,
+				},
+			})
 		}
 	}
 }

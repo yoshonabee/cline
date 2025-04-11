@@ -6,253 +6,246 @@ import time
 import os
 import traceback
 from typing import Optional, Dict, Any, List, Callable
+from enum import Enum, auto
+
+class ChatStatus(Enum):
+    IDLE = auto()
+    STREAMING = auto()
+    COMPLETED = auto()
+    ERROR = auto()
 
 class WebSocketClient:
-    def __init__(self, url: str, token: str):
+    def __init__(self, url: str, session_id: str, token: str, message_handler):
         self.url = url
+        self.session_id = session_id
         self.token = token
-        self.ws: Optional[websocket.WebSocketApp] = None
-        self.messages: List[Dict[str, Any]] = []
-        self.is_connected = False
-        self.on_message_received: Optional[Callable[[str], None]] = None
+        self.message_handler = message_handler
+        self.ws = None
         self._connect()
 
     def _connect(self):
-        headers = {
-            'Authorization': f'Bearer {self.token}'
-        }
-        self.ws = websocket.WebSocketApp(
-            self.url,
-            header=headers,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close,
-            on_open=self._on_open
-        )
-        self.ws_thread = threading.Thread(target=self.ws.run_forever)
-        self.ws_thread.daemon = True
-        self.ws_thread.start()
+        """連接到 WebSocket 伺服器"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self.token}"
+            }
+            self.ws = websocket.WebSocketApp(
+                f"{self.url}?sessionId={self.session_id}",
+                header=headers,
+                on_message=self._on_message,
+                on_error=self._on_error,
+                on_close=self._on_close,
+                on_open=self._on_open
+            )
+            # 在背景執行 WebSocket
+            threading.Thread(target=self.ws.run_forever, daemon=True).start()
+        except Exception as e:
+            print(f"WebSocket 連接失敗: {e}")
 
     def _on_message(self, ws, message):
+        """處理收到的 WebSocket 消息"""
         try:
-            data = json.loads(message)
-            
-            # 處理一般消息
-            if 'message' in data:
-                msg = data['message']
-                content = msg.get('content', '')
-                msg_type = msg.get('type', '')
-                timestamp = msg.get('timestamp', '')
-                
-                # 根據消息類型顯示不同格式
-                if msg_type == 'user':
-                    print(f"\n[{timestamp}] 你: {content}")
-                elif msg_type == 'assistant':
-                    print(f"\n[{timestamp}] AI: {content}")
-                    if self.on_message_received:
-                        self.on_message_received(msg_type)
-                else:
-                    print(f"\n[{timestamp}] {msg_type}: {content}")
-                
-                print("\n> ", end='', flush=True)
-            
-            # 處理狀態更新
-            elif 'status' in data:
-                status = data.get('status', '')
-                if status:
-                    print(f"\n系統: {status}")
-                    print("\n> ", end='', flush=True)
-            
-            # 處理錯誤消息
-            elif 'error' in data:
-                error = data.get('error', '')
-                if error:
-                    print(f"\n錯誤: {error}")
-                    print("\n> ", end='', flush=True)
-            
-            # 其他類型的消息
-            else:
-                print(f"\n收到未知類型的消息: {json.dumps(data, ensure_ascii=False)}")
-                print("\n> ", end='', flush=True)
-            
-            # 保存消息以供後續使用
-            self.messages.append(data)
-            
-        except json.JSONDecodeError:
-            print(f"\n收到非 JSON 格式的消息: {message}")
-            print("\n> ", end='', flush=True)
+            if self.message_handler:
+                self.message_handler(message)
         except Exception as e:
-            print(f"\n處理消息時發生錯誤: {e}")
-            print("\n> ", end='', flush=True)
+            print(f"處理 WebSocket 消息時發生錯誤: {e}")
 
     def _on_error(self, ws, error):
-        print(f"\nWebSocket 錯誤: {error}")
-        print("\n> ", end='', flush=True)
+        """處理 WebSocket 錯誤"""
+        print(f"WebSocket 錯誤: {error}")
 
     def _on_close(self, ws, close_status_code, close_msg):
-        print("\nWebSocket 連接關閉")
-        self.is_connected = False
-        print("\n> ", end='', flush=True)
+        """處理 WebSocket 連接關閉"""
+        print("WebSocket 連接已關閉")
 
     def _on_open(self, ws):
-        print("\nWebSocket 連接建立")
-        self.is_connected = True
-        print("\n> ", end='', flush=True)
-
-    def wait_for_connection(self, timeout: int = 5) -> bool:
-        start_time = time.time()
-        while not self.is_connected and time.time() - start_time < timeout:
-            time.sleep(0.1)
-        return self.is_connected
+        """處理 WebSocket 連接開啟"""
+        print("WebSocket 連接已建立")
 
     def close(self):
+        """關閉 WebSocket 連接"""
         if self.ws:
             self.ws.close()
-            self.ws_thread.join(timeout=1)
 
 class ChatClient:
     def __init__(self, base_url: str = "http://localhost:7581"):
-        self.base_url = base_url.rstrip('/')
-        self.token: Optional[str] = None
-        self.ws_client: Optional[WebSocketClient] = None
-        self.session_id: Optional[str] = None
+        self.base_url = base_url
+        self.session_id = None
+        self.token = None
+        self.ws_client = None
+        self._is_complete = False
         self._response_received = threading.Event()
         self._last_response_time = 0
 
-    def connect(self) -> bool:
-        """連接到伺服器並獲取 token"""
+    def _handle_message_received(self, message_str):
+        """處理收到的 WebSocket 消息"""
         try:
-            # 檢查伺服器狀態
-            response = requests.get(f"{self.base_url}/api/status")
-            if response.status_code != 200:
-                print(f"無法連接到伺服器: {response.status_code}")
-                return False
+            message = json.loads(message_str)
+            
+            # 檢查消息類型
+            if "type" not in message:
+                return
+                
+            if message["type"] == "message":
+                # 處理聊天消息
+                ws_message = message["data"]
+                if not ws_message or "message" not in ws_message:
+                    return
+                    
+                chat_message = ws_message["message"]
+                message_type = chat_message.get("type")
+                content = chat_message.get("content", "")
+                is_complete = chat_message.get("complete", False)
+                
+                if message_type == "assistant":
+                    self._last_response_time = time.time()
+                    print(content, end="", flush=True)
+                    
+                    if is_complete:
+                        print("\n")
+                        self._is_complete = True
+                        self._response_received.set()
+                        
+            elif message["type"] == "status":
+                # 處理狀態更新
+                status_data = message["data"]
+                if status_data.get("status") == "completed":
+                    self._is_complete = True
+                    self._response_received.set()
+                    
+        except json.JSONDecodeError:
+            print("無法解析 WebSocket 消息")
+        except Exception as e:
+            print(f"處理 WebSocket 消息時發生錯誤: {e}")
 
+    def create_session(self, message: str, images: Optional[List[str]] = None) -> bool:
+        """創建新的聊天會話"""
+        try:
             # 獲取 token
             response = requests.get(f"{self.base_url}/api/token")
             if response.status_code != 200:
-                print("無法獲取 token")
+                print(f"獲取 token 失敗: {response.status_code}")
                 return False
+            self.token = response.json()["token"]
 
-            self.token = response.json()['token']
-            return True
-        except Exception as e:
-            print(f"連接時發生錯誤: {e}")
-            return False
+            # 創建會話
+            headers = {"Authorization": f"Bearer {self.token}"}
+            data = {"text": message}
+            if images:
+                data["images"] = images
 
-    def create_session(self, initial_message: str) -> bool:
-        """創建新的聊天會話"""
-        if not self.token:
-            print("尚未獲取 token")
-            return False
-
-        try:
-            headers = {'Authorization': f'Bearer {self.token}'}
-            data = {'text': initial_message}
-            
             response = requests.post(
                 f"{self.base_url}/api/chat/sessions",
                 headers=headers,
                 json=data
             )
-            
+
             if response.status_code != 201:
                 print(f"創建會話失敗: {response.status_code}")
                 return False
 
-            self.session_id = response.json()['sessionId']
-            
-            # 創建 WebSocket 連接
-            ws_url = f"ws://localhost:7581?sessionId={self.session_id}"
-            self.ws_client = WebSocketClient(ws_url, self.token)
-            
-            # 設置回覆接收事件的處理器
-            self.ws_client.on_message_received = self._handle_message_received
-            
-            return self.ws_client.wait_for_connection()
+            self.session_id = response.json()["sessionId"]
+
+            # 連接 WebSocket
+            return self._connect_websocket()
+
         except Exception as e:
             print(f"創建會話時發生錯誤: {e}")
             return False
 
-    def _handle_message_received(self, message_type: str):
-        """處理收到的訊息"""
-        if message_type == 'assistant':
-            self._last_response_time = time.time()
-            self._response_received.set()
-
-    def wait_for_response(self, timeout: int = 60) -> bool:
-        """等待助手的回覆"""
-        self._response_received.clear()
-        if self._response_received.wait(timeout):
-            # 額外等待 1 秒，確保沒有更多的回覆
-            time.sleep(1)
-            if time.time() - self._last_response_time >= 1:
-                return True
-        return False
-
-    def send_message(self, text: str) -> bool:
-        """發送訊息到伺服器並等待回覆"""
-        # 如果是第一條訊息，先創建會話
-        if not self.session_id:
-            if not self.create_session(text):
-                return False
-            return self.wait_for_response()
+    def send_message(self, message: str, images: Optional[List[str]] = None) -> bool:
+        """發送訊息到現有會話"""
+        if not self.session_id or not self.token:
+            print("尚未創建會話")
+            return False
 
         try:
-            headers = {'Authorization': f'Bearer {self.token}'}
-            data = {'text': text}
-            
+            headers = {"Authorization": f"Bearer {self.token}"}
+            data = {"text": message}
+            if images:
+                data["images"] = images
+
             response = requests.post(
                 f"{self.base_url}/api/chat/sessions/{self.session_id}/messages",
                 headers=headers,
                 json=data
             )
-            
+
             if response.status_code != 200:
+                print(f"發送訊息失敗: {response.status_code}")
                 return False
-                
-            # 等待回覆
+
+            # 等待回應完成
             return self.wait_for_response()
+
         except Exception as e:
             print(f"發送訊息時發生錯誤: {e}")
             return False
 
+    def _connect_websocket(self) -> bool:
+        """連接到 WebSocket"""
+        try:
+            ws_url = f"ws://localhost:7581"
+            self.ws_client = WebSocketClient(ws_url, self.session_id, self.token, self._handle_message_received)
+            return True
+        except Exception as e:
+            print(f"WebSocket 連接失敗: {e}")
+            return False
+
+    def wait_for_response(self, timeout: int = 60) -> bool:
+        """等待回應完成"""
+        self._is_complete = False
+        self._response_received.clear()
+        
+        try:
+            # 等待回應完成或超時
+            if not self._response_received.wait(timeout):
+                print("\n等待回應超時")
+                return False
+                
+            return True
+            
+        except KeyboardInterrupt:
+            print("\n使用者中斷等待")
+            return False
+
     def close(self):
-        """關閉連接"""
+        """關閉客戶端連接"""
         if self.ws_client:
             self.ws_client.close()
 
 def main():
-    print("正在連接到聊天伺服器...")
+    """主程式"""
     client = ChatClient()
     
-    if not client.connect():
-        print("無法連接到伺服器")
-        return
-
-    print("\n=== 聊天已開始 ===")
-    print("你好，請問有什麼我可以幫你的嗎？")
-    print("輸入 'exit' 結束對話")
-    print("> ", end='', flush=True)
-
     try:
-        while True:
-            message = input()
-            if message.lower() == 'exit':
-                break
+        # 讀取用戶輸入並創建會話
+        message = input("請輸入訊息: ")
+        if not message:
+            print("訊息不能為空")
+            return
             
-            if message.strip():
-                if not client.send_message(message):
-                    print("發送訊息失敗")
-                    break
+        if not client.create_session(message):
+            print("創建會話失敗")
+            return
+            
+        # 持續讀取用戶輸入
+        while True:
+            message = input("\n> ")
+            if not message:
+                continue
+                
+            if message.lower() in ['exit', 'quit', 'q']:
+                break
+                
+            if not client.send_message(message):
+                print("發送訊息失敗")
+                break
+                
     except KeyboardInterrupt:
-        print("\n接收到中斷信號，正在結束程式...")
-    except Exception as e:
-        print(f"\n發生錯誤: {e}")
+        print("\n程式已中斷")
     finally:
-        print("\n正在關閉連接...")
         client.close()
-        print("已結束對話")
 
 if __name__ == "__main__":
     main() 

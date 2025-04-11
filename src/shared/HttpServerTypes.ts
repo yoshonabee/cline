@@ -49,6 +49,7 @@ export interface ChatMessage {
 	content: string
 	timestamp: string
 	images?: string[]
+	complete?: boolean
 }
 
 export interface ChatSession {

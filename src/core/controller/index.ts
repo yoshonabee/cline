@@ -44,6 +44,7 @@ import {
 } from "../storage/state"
 import { WebviewProvider } from "../webview"
 import { GlobalFileNames } from "../storage/disk"
+import { HttpController } from "../../services/http/HttpController"
 
 /*
 https://github.com/microsoft/vscode-webview-ui-toolkit-samples/blob/main/default/weather-webview/src/providers/WeatherViewProvider.ts
@@ -59,14 +60,18 @@ export class Controller {
 	accountService?: ClineAccountService
 	private latestAnnouncementId = "march-22-2025" // update to some unique identifier when we add a new announcement
 	private webviewProviderRef: WeakRef<WebviewProvider>
+	private httpController?: HttpController
+	private currentSessionId: string = ""
 
 	constructor(
-		readonly context: vscode.ExtensionContext,
+		public readonly context: vscode.ExtensionContext,
 		private readonly outputChannel: vscode.OutputChannel,
 		webviewProvider: WebviewProvider,
+		httpController?: HttpController,
 	) {
 		this.outputChannel.appendLine("ClineProvider instantiated")
 		this.webviewProviderRef = new WeakRef(webviewProvider)
+		this.httpController = httpController
 
 		this.workspaceTracker = new WorkspaceTracker(this)
 		this.mcpHub = new McpHub(this)
@@ -155,6 +160,34 @@ export class Controller {
 	// Send any JSON serializable data to the react app
 	async postMessageToWebview(message: ExtensionMessage) {
 		await this.webviewProviderRef.deref()?.view?.webview.postMessage(message)
+
+		// 同時發送到 WebSocket 服務器
+		if (this.httpController) {
+			const sessionId = this.getCurrentSessionId()
+			if (sessionId) {
+				// 將 ExtensionMessage 轉換為適合 WebSocket 的格式
+				let content = ""
+				let isComplete = false
+
+				// 解析不同類型的消息
+				if (message.type === "partialMessage" && message.partialMessage) {
+					content = message.partialMessage.text || ""
+					isComplete = !message.partialMessage.partial
+				} else if (message.type === "state" && message.state?.clineMessages?.length) {
+					// 從狀態中取得最新的消息
+					const lastMessage = message.state.clineMessages[message.state.clineMessages.length - 1]
+					if (lastMessage.type === "say" && lastMessage.say === "text") {
+						content = lastMessage.text || ""
+						isComplete = !lastMessage.partial
+					}
+				}
+
+				// 如果有內容，發送到 WebSocket
+				if (content) {
+					this.httpController.handleAssistantResponse(sessionId, content, isComplete)
+				}
+			}
+		}
 	}
 
 	/**
@@ -1585,6 +1618,27 @@ Here is the project's README to help you get started:\n\n${mcpDetails.readmeCont
 	async postStateToWebview() {
 		const state = await this.getStateToPostToWebview()
 		this.postMessageToWebview({ type: "state", state })
+
+		// 同時將最新的訊息發送到 WebSocket 服務器
+		if (this.httpController) {
+			const sessionId = this.getCurrentSessionId()
+			if (sessionId && state.clineMessages.length > 0) {
+				// 尋找最新的助手消息
+				const assistantMessages = state.clineMessages.filter(
+					(msg) => msg.type === "say" && msg.say === "text" && msg.text,
+				)
+
+				if (assistantMessages.length > 0) {
+					// 獲取最新的助手消息
+					const lastMessage = assistantMessages[assistantMessages.length - 1]
+					const content = lastMessage.text || ""
+					const isComplete = !lastMessage.partial
+
+					// 發送到 WebSocket
+					this.httpController.handleAssistantResponse(sessionId, content, isComplete)
+				}
+			}
+		}
 	}
 
 	async getStateToPostToWebview(): Promise<ExtensionState> {
@@ -1758,5 +1812,25 @@ Here is the project's README to help you get started:\n\n${mcpDetails.readmeCont
 			type: "action",
 			action: "chatButtonClicked",
 		})
+	}
+
+	// 新增: 設置當前的 HTTP 會話 ID
+	public setCurrentSessionId(sessionId: string): void {
+		this.currentSessionId = sessionId
+		console.log(`[${new Date().toISOString()}] 已設置當前會話 ID: ${sessionId}`)
+	}
+
+	// 更新: 獲取當前會話 ID 時優先返回 HTTP 會話 ID
+	public getCurrentSessionId(): string | undefined {
+		return this.currentSessionId || this.task?.taskId
+	}
+
+	// 新增: 獲取 HTTP 控制器實例
+	public getHttpController() {
+		return this.httpController
+	}
+
+	public setHttpController(httpController: HttpController) {
+		this.httpController = httpController
 	}
 }

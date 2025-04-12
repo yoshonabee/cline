@@ -165,27 +165,7 @@ export class Controller {
 		if (this.httpController) {
 			const sessionId = this.getCurrentSessionId()
 			if (sessionId) {
-				// 將 ExtensionMessage 轉換為適合 WebSocket 的格式
-				let content = ""
-				let isComplete = false
-
-				// 解析不同類型的消息
-				if (message.type === "partialMessage" && message.partialMessage) {
-					content = message.partialMessage.text || ""
-					isComplete = !message.partialMessage.partial
-				} else if (message.type === "state" && message.state?.clineMessages?.length) {
-					// 從狀態中取得最新的消息
-					const lastMessage = message.state.clineMessages[message.state.clineMessages.length - 1]
-					if (lastMessage.type === "say" && lastMessage.say === "text") {
-						content = lastMessage.text || ""
-						isComplete = !lastMessage.partial
-					}
-				}
-
-				// 如果有內容，發送到 WebSocket
-				if (content) {
-					this.httpController.handleAssistantResponse(sessionId, content, isComplete)
-				}
+				this.httpController.handleAssistantResponse(sessionId, message)
 			}
 		}
 	}
@@ -1618,27 +1598,6 @@ Here is the project's README to help you get started:\n\n${mcpDetails.readmeCont
 	async postStateToWebview() {
 		const state = await this.getStateToPostToWebview()
 		this.postMessageToWebview({ type: "state", state })
-
-		// 同時將最新的訊息發送到 WebSocket 服務器
-		if (this.httpController) {
-			const sessionId = this.getCurrentSessionId()
-			if (sessionId && state.clineMessages.length > 0) {
-				// 尋找最新的助手消息
-				const assistantMessages = state.clineMessages.filter(
-					(msg) => msg.type === "say" && msg.say === "text" && msg.text,
-				)
-
-				if (assistantMessages.length > 0) {
-					// 獲取最新的助手消息
-					const lastMessage = assistantMessages[assistantMessages.length - 1]
-					const content = lastMessage.text || ""
-					const isComplete = !lastMessage.partial
-
-					// 發送到 WebSocket
-					this.httpController.handleAssistantResponse(sessionId, content, isComplete)
-				}
-			}
-		}
 	}
 
 	async getStateToPostToWebview(): Promise<ExtensionState> {

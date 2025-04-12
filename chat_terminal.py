@@ -8,11 +8,13 @@ import traceback
 from typing import Optional, Dict, Any, List, Callable
 from enum import Enum, auto
 
+
 class ChatStatus(Enum):
     IDLE = auto()
     STREAMING = auto()
     COMPLETED = auto()
     ERROR = auto()
+
 
 class WebSocketClient:
     def __init__(self, url: str, session_id: str, token: str, message_handler):
@@ -26,16 +28,14 @@ class WebSocketClient:
     def _connect(self):
         """連接到 WebSocket 伺服器"""
         try:
-            headers = {
-                "Authorization": f"Bearer {self.token}"
-            }
+            headers = {"Authorization": f"Bearer {self.token}"}
             self.ws = websocket.WebSocketApp(
                 f"{self.url}?sessionId={self.session_id}",
                 header=headers,
                 on_message=self._on_message,
                 on_error=self._on_error,
                 on_close=self._on_close,
-                on_open=self._on_open
+                on_open=self._on_open,
             )
             # 在背景執行 WebSocket
             threading.Thread(target=self.ws.run_forever, daemon=True).start()
@@ -67,6 +67,7 @@ class WebSocketClient:
         if self.ws:
             self.ws.close()
 
+
 class ChatClient:
     def __init__(self, base_url: str = "http://localhost:7581"):
         self.base_url = base_url
@@ -76,43 +77,16 @@ class ChatClient:
         self._is_complete = False
         self._response_received = threading.Event()
         self._last_response_time = 0
+        self._last_content = ""
 
     def _handle_message_received(self, message_str):
         """處理收到的 WebSocket 消息"""
         try:
             message = json.loads(message_str)
-            
-            # 檢查消息類型
-            if "type" not in message:
-                return
-                
-            if message["type"] == "message":
-                # 處理聊天消息
-                ws_message = message["data"]
-                if not ws_message or "message" not in ws_message:
-                    return
-                    
-                chat_message = ws_message["message"]
-                message_type = chat_message.get("type")
-                content = chat_message.get("content", "")
-                is_complete = chat_message.get("complete", False)
-                
-                if message_type == "assistant":
-                    self._last_response_time = time.time()
-                    print(content, end="", flush=True)
-                    
-                    if is_complete:
-                        print("\n")
-                        self._is_complete = True
-                        self._response_received.set()
-                        
-            elif message["type"] == "status":
-                # 處理狀態更新
-                status_data = message["data"]
-                if status_data.get("status") == "completed":
-                    self._is_complete = True
-                    self._response_received.set()
-                    
+
+            if message.get("message"):
+                print(message["message"])
+
         except json.JSONDecodeError:
             print("無法解析 WebSocket 消息")
         except Exception as e:
@@ -135,9 +109,7 @@ class ChatClient:
                 data["images"] = images
 
             response = requests.post(
-                f"{self.base_url}/api/chat/sessions",
-                headers=headers,
-                json=data
+                f"{self.base_url}/api/chat/sessions", headers=headers, json=data
             )
 
             if response.status_code != 201:
@@ -168,7 +140,7 @@ class ChatClient:
             response = requests.post(
                 f"{self.base_url}/api/chat/sessions/{self.session_id}/messages",
                 headers=headers,
-                json=data
+                json=data,
             )
 
             if response.status_code != 200:
@@ -186,7 +158,9 @@ class ChatClient:
         """連接到 WebSocket"""
         try:
             ws_url = f"ws://localhost:7581"
-            self.ws_client = WebSocketClient(ws_url, self.session_id, self.token, self._handle_message_received)
+            self.ws_client = WebSocketClient(
+                ws_url, self.session_id, self.token, self._handle_message_received
+            )
             return True
         except Exception as e:
             print(f"WebSocket 連接失敗: {e}")
@@ -196,15 +170,15 @@ class ChatClient:
         """等待回應完成"""
         self._is_complete = False
         self._response_received.clear()
-        
+
         try:
             # 等待回應完成或超時
             if not self._response_received.wait(timeout):
                 print("\n等待回應超時")
                 return False
-                
+
             return True
-            
+
         except KeyboardInterrupt:
             print("\n使用者中斷等待")
             return False
@@ -214,38 +188,40 @@ class ChatClient:
         if self.ws_client:
             self.ws_client.close()
 
+
 def main():
     """主程式"""
     client = ChatClient()
-    
+
     try:
         # 讀取用戶輸入並創建會話
         message = input("請輸入訊息: ")
         if not message:
             print("訊息不能為空")
             return
-            
+
         if not client.create_session(message):
             print("創建會話失敗")
             return
-            
+
         # 持續讀取用戶輸入
         while True:
             message = input("\n> ")
             if not message:
                 continue
-                
-            if message.lower() in ['exit', 'quit', 'q']:
+
+            if message.lower() in ["exit", "quit", "q"]:
                 break
-                
+
             if not client.send_message(message):
                 print("發送訊息失敗")
                 break
-                
+
     except KeyboardInterrupt:
         print("\n程式已中斷")
     finally:
         client.close()
 
+
 if __name__ == "__main__":
-    main() 
+    main()

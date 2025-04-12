@@ -3187,17 +3187,6 @@ export class Task {
 							if (this.assistantMessageContent.length > prevLength) {
 								this.userMessageContentReady = false // new content we need to present, reset to false in case previous content set this to true
 							}
-							// 通知 HttpController 有新的 assistant 回應
-							const controller = this.controllerRef.deref()
-							if (controller) {
-								const httpController = controller.getHttpController()
-								if (httpController) {
-									const sessionId = controller.getCurrentSessionId()
-									if (sessionId) {
-										httpController.handleAssistantResponse(sessionId, chunk.text, false)
-									}
-								}
-							}
 							// present content to user
 							this.presentAssistantMessage()
 							break

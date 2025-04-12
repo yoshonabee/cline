@@ -1,3 +1,5 @@
+import { ExtensionMessage } from "./ExtensionMessage"
+
 export interface HttpServerConfig {
 	enabled: boolean
 	port: number
@@ -44,17 +46,9 @@ export interface TaskStatusResponse {
 }
 
 // Chat-related types
-export interface ChatMessage {
-	type: "user" | "assistant"
-	content: string
-	timestamp: string
-	images?: string[]
-	complete?: boolean
-}
 
 export interface ChatSession {
 	id: string
-	messages: ChatMessage[]
 	status: "active" | "completed" | "error"
 	createdAt: string
 	updatedAt: string
@@ -77,14 +71,9 @@ export interface ChatMessageRequest {
 
 export interface ChatMessageResponse {
 	sessionId: string
-	message: ChatMessage
+	message: ExtensionMessage
 }
 
 export interface ChatSessionResponse {
 	session: ChatSession
-}
-
-export interface ChatStatusResponse {
-	status: "active" | "completed" | "error"
-	lastMessage?: ChatMessage
 }

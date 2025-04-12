@@ -14,12 +14,11 @@ import {
 	ChatMessageRequest,
 	ChatMessageResponse,
 	ChatSessionResponse,
-	ChatStatusResponse,
 	ChatSession,
-	ChatMessage,
 } from "../../shared/HttpServerTypes"
 import { Logger } from "../../services/logging/Logger"
 import { WebSocket } from "ws"
+import { ExtensionMessage } from "../../shared/ExtensionMessage"
 
 /**
  * Handles HTTP API requests and routes them to the appropriate controller methods.
@@ -28,6 +27,7 @@ export class HttpController {
 	private router: Router
 	private chatSessions: Map<string, ChatSession> = new Map()
 	private wsClients: Map<string, Set<WebSocket>> = new Map()
+	private lastMessage: ExtensionMessage | null = null
 
 	constructor(
 		private controllerRef: WeakRef<Controller>,
@@ -62,7 +62,6 @@ export class HttpController {
 			this.sendChatMessage.bind(this),
 		)
 		this.router.get("/api/chat/sessions/:sessionId", this.authMiddleware.bind(this), this.getChatSession.bind(this))
-		this.router.get("/api/chat/sessions/:sessionId/status", this.authMiddleware.bind(this), this.getChatStatus.bind(this))
 
 		// Existing endpoints
 		this.router.post("/api/tasks", this.authMiddleware.bind(this), this.createTask.bind(this))
@@ -311,20 +310,10 @@ export class HttpController {
 			const now = new Date().toISOString()
 			const session: ChatSession = {
 				id: sessionId,
-				messages: [],
 				status: "active",
 				createdAt: now,
 				updatedAt: now,
 			}
-
-			// Add initial message
-			const message: ChatMessage = {
-				type: "user",
-				content: chatRequest.text,
-				timestamp: now,
-				images: chatRequest.images,
-			}
-			session.messages.push(message)
 
 			// Store the session
 			this.chatSessions.set(sessionId, session)
@@ -402,25 +391,11 @@ export class HttpController {
 			})
 			Logger.log(`[${new Date().toISOString()}] HTTP API: 已發送訊息到現有任務: ${messageRequest.text}`)
 
-			// Add message to session
-			const message: ChatMessage = {
-				type: "user",
-				content: messageRequest.text,
-				timestamp: new Date().toISOString(),
-				images: messageRequest.images,
-			}
-			session.messages.push(message)
-
 			// Notify WebSocket clients
 			const clients = this.wsClients.get(sessionId)
 			if (clients) {
-				const messageResponse: ChatMessageResponse = {
-					sessionId,
-					message,
-				}
 				clients.forEach((client) => {
 					if (client.readyState === WebSocket.OPEN) {
-						client.send(JSON.stringify(messageResponse))
 						Logger.log(`[${new Date().toISOString()}] HTTP API: 已通過 WebSocket 發送訊息到客戶端`)
 					}
 				})
@@ -448,31 +423,6 @@ export class HttpController {
 
 			const response: ChatSessionResponse = {
 				session,
-			}
-
-			res.json(response)
-		} catch (error) {
-			Logger.log(`HTTP API Error: ${error}`)
-			res.status(500).json({ error: "Internal server error" })
-		}
-	}
-
-	/**
-	 * Get chat session status
-	 */
-	private async getChatStatus(req: Request, res: Response) {
-		try {
-			const sessionId = req.params.sessionId
-			const session = this.chatSessions.get(sessionId)
-
-			if (!session) {
-				res.status(404).json({ error: "Chat session not found" })
-				return
-			}
-
-			const response: ChatStatusResponse = {
-				status: session.status,
-				lastMessage: session.messages[session.messages.length - 1],
 			}
 
 			res.json(response)
@@ -546,55 +496,33 @@ export class HttpController {
 	}
 
 	// 新增: 處理 AI 回應的方法
-	public handleAssistantResponse(sessionId: string, content: string, isComplete: boolean = false) {
+	public handleAssistantResponse(sessionId: string, message: ExtensionMessage) {
 		const session = this.chatSessions.get(sessionId)
 		if (!session) {
 			Logger.log(`[${new Date().toISOString()}] HTTP API Error: Chat session ${sessionId} not found`)
 			return
 		}
 
-		let message: ChatMessage
-		const lastMessage = session.messages[session.messages.length - 1]
+		Logger.log(`[${new Date().toISOString()}] HTTP API: 收到 Controller 回應: ${message.type}`)
 
-		// 如果最後一條消息是 assistant 且未完成，則更新它
-		if (lastMessage && lastMessage.type === "assistant" && !lastMessage.complete) {
-			message = lastMessage
-			message.content = content
-			message.complete = isComplete
-		} else {
-			// 否則創建新消息
-			message = {
-				type: "assistant",
-				content: content,
-				timestamp: new Date().toISOString(),
-				complete: isComplete,
+		Logger.log(`[${new Date().toISOString()}] HTTP API: 收到 Controller 回應 say: ${message.partialMessage?.say}`)
+
+		if (message.type === "partialMessage") {
+			let partialMessage
+			if (
+				this.lastMessage &&
+				this.lastMessage.type === "partialMessage" &&
+				this.lastMessage.partialMessage?.ts === message.partialMessage?.ts
+			) {
+				partialMessage = message.partialMessage?.text?.slice(this.lastMessage?.partialMessage?.text?.length || 0) || ""
+			} else {
+				partialMessage = message.partialMessage?.text || ""
 			}
-			session.messages.push(message)
+
+			this.lastMessage = JSON.parse(JSON.stringify(message))
+			this.notifySessionClients(sessionId, { message: partialMessage })
 		}
 
 		// 通知 WebSocket 客戶端
-		const messageResponse: ChatMessageResponse = {
-			sessionId,
-			message,
-		}
-		this.notifySessionClients(sessionId, {
-			type: "message",
-			data: messageResponse,
-		})
-
-		// 如果消息完成，發送完成狀態
-		if (isComplete) {
-			session.status = "completed"
-			session.updatedAt = new Date().toISOString()
-
-			// 通知客戶端會話狀態更新
-			this.notifySessionClients(sessionId, {
-				type: "status",
-				data: {
-					status: "completed",
-					timestamp: session.updatedAt,
-				},
-			})
-		}
 	}
 }

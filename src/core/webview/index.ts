@@ -23,7 +23,12 @@ export class WebviewProvider implements vscode.WebviewViewProvider {
 		private readonly outputChannel: vscode.OutputChannel,
 	) {
 		WebviewProvider.activeInstances.add(this)
-		this.controller = new Controller(context, outputChannel, (message) => this.view?.webview.postMessage(message))
+		this.controller = new Controller(
+			(message: import("../../shared/ExtensionMessage").ExtensionMessage) => this.view?.webview.postMessage(message),
+			context,
+			outputChannel,
+			this,
+		)
 	}
 
 	async dispose() {

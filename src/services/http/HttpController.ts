@@ -171,7 +171,7 @@ export class HttpController {
 			Logger.log(`[${new Date().toISOString()}] HTTP API: 已設置當前會話 ID 到 controller: ${sessionId}`)
 
 			// Initialize task with the message
-			await visibleWebview.controller.initClineWithTask(chatRequest.text, chatRequest.images)
+			await visibleWebview.controller.initTask(chatRequest.text, chatRequest.images)
 			Logger.log(`[${new Date().toISOString()}] HTTP API: 已初始化任務: ${chatRequest.text}`)
 
 			const response: CreateChatResponse = {

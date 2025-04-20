@@ -10,6 +10,8 @@ import assert from "node:assert"
 import { telemetryService } from "./services/telemetry/TelemetryService"
 import { WebviewProvider } from "./core/webview"
 import { HttpServerService } from "./services/http/HttpServerService"
+import { createTestServer, shutdownTestServer } from "./services/test/TestServer"
+import { ErrorService } from "./services/error/ErrorService"
 
 /*
 Built using https://github.com/microsoft/vscode-webview-ui-toolkit
@@ -29,12 +31,14 @@ export function activate(context: vscode.ExtensionContext) {
 	outputChannel = vscode.window.createOutputChannel("Cline")
 	context.subscriptions.push(outputChannel)
 
+	ErrorService.initialize()
 	Logger.initialize(outputChannel)
 	Logger.log("Cline extension activated")
 
 	const sidebarWebview = new WebviewProvider(context, outputChannel)
 
 	vscode.commands.executeCommand("setContext", "cline.isDevMode", IS_DEV && IS_DEV === "true")
+	vscode.commands.executeCommand("setContext", "cline.isTestMode", IS_TEST && IS_TEST === "true")
 
 	// Initialize and start HTTP server
 	httpServerService = new HttpServerService(new WeakRef(sidebarWebview.controller))
@@ -88,35 +92,37 @@ export function activate(context: vscode.ExtensionContext) {
 	)
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand("cline.plusButtonClicked", async () => {
-			Logger.log("Plus button Clicked")
-			const visibleWebview = WebviewProvider.getVisibleInstance()
-			if (!visibleWebview) {
-				Logger.log("Cannot find any visible Cline instances.")
-				return
+		vscode.commands.registerCommand("cline.plusButtonClicked", async (webview: any) => {
+			const openChat = async (instance?: WebviewProvider) => {
+				await instance?.controller.clearTask()
+				await instance?.controller.postStateToWebview()
+				await instance?.controller.postMessageToWebview({
+					type: "action",
+					action: "chatButtonClicked",
+				})
 			}
-
-			await visibleWebview.controller.clearTask()
-			await visibleWebview.controller.postStateToWebview()
-			await visibleWebview.controller.postMessageToWebview({
-				type: "action",
-				action: "chatButtonClicked",
-			})
+			const isSidebar = !webview
+			if (isSidebar) {
+				openChat(WebviewProvider.getSidebarInstance())
+			} else {
+				WebviewProvider.getTabInstances().forEach(openChat)
+			}
 		}),
 	)
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand("cline.mcpButtonClicked", () => {
-			const visibleWebview = WebviewProvider.getVisibleInstance()
-			if (!visibleWebview) {
-				Logger.log("Cannot find any visible Cline instances.")
-				return
+		vscode.commands.registerCommand("cline.mcpButtonClicked", (webview: any) => {
+			const openMcp = (instance?: WebviewProvider) =>
+				instance?.controller.postMessageToWebview({
+					type: "action",
+					action: "mcpButtonClicked",
+				})
+			const isSidebar = !webview
+			if (isSidebar) {
+				openMcp(WebviewProvider.getSidebarInstance())
+			} else {
+				WebviewProvider.getTabInstances().forEach(openMcp)
 			}
-
-			visibleWebview.controller.postMessageToWebview({
-				type: "action",
-				action: "mcpButtonClicked",
-			})
 		}),
 	)
 
@@ -157,47 +163,58 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(vscode.commands.registerCommand("cline.openInNewTab", openClineInNewTab))
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand("cline.settingsButtonClicked", () => {
-			//vscode.window.showInformationMessage(message)
-			const visibleWebview = WebviewProvider.getVisibleInstance()
-			if (!visibleWebview) {
-				Logger.log("Cannot find any visible Cline instances.")
-				return
-			}
-
-			visibleWebview.controller.postMessageToWebview({
-				type: "action",
-				action: "settingsButtonClicked",
+		vscode.commands.registerCommand("cline.settingsButtonClicked", (webview: any) => {
+			WebviewProvider.getAllInstances().forEach((instance) => {
+				const openSettings = async (instance?: WebviewProvider) => {
+					instance?.controller.postMessageToWebview({
+						type: "action",
+						action: "settingsButtonClicked",
+					})
+				}
+				const isSidebar = !webview
+				if (isSidebar) {
+					openSettings(WebviewProvider.getSidebarInstance())
+				} else {
+					WebviewProvider.getTabInstances().forEach(openSettings)
+				}
 			})
 		}),
 	)
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand("cline.historyButtonClicked", () => {
-			const visibleWebview = WebviewProvider.getVisibleInstance()
-			if (!visibleWebview) {
-				Logger.log("Cannot find any visible Cline instances.")
-				return
-			}
-
-			visibleWebview.controller.postMessageToWebview({
-				type: "action",
-				action: "historyButtonClicked",
+		vscode.commands.registerCommand("cline.historyButtonClicked", (webview: any) => {
+			WebviewProvider.getAllInstances().forEach((instance) => {
+				const openHistory = async (instance?: WebviewProvider) => {
+					instance?.controller.postMessageToWebview({
+						type: "action",
+						action: "historyButtonClicked",
+					})
+				}
+				const isSidebar = !webview
+				if (isSidebar) {
+					openHistory(WebviewProvider.getSidebarInstance())
+				} else {
+					WebviewProvider.getTabInstances().forEach(openHistory)
+				}
 			})
 		}),
 	)
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand("cline.accountButtonClicked", () => {
-			const visibleWebview = WebviewProvider.getVisibleInstance()
-			if (!visibleWebview) {
-				Logger.log("Cannot find any visible Cline instances.")
-				return
-			}
-
-			visibleWebview.controller.postMessageToWebview({
-				type: "action",
-				action: "accountButtonClicked",
+		vscode.commands.registerCommand("cline.accountButtonClicked", (webview: any) => {
+			WebviewProvider.getAllInstances().forEach((instance) => {
+				const openAccount = async (instance?: WebviewProvider) => {
+					instance?.controller.postMessageToWebview({
+						type: "action",
+						action: "accountButtonClicked",
+					})
+				}
+				const isSidebar = !webview
+				if (isSidebar) {
+					openAccount(WebviewProvider.getSidebarInstance())
+				} else {
+					WebviewProvider.getTabInstances().forEach(openAccount)
+				}
 			})
 		}),
 	)
@@ -411,7 +428,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	// Register the command handler
 	context.subscriptions.push(
-		vscode.commands.registerCommand("cline.fixWithCline", async (range: vscode.Range, diagnostics: any[]) => {
+		vscode.commands.registerCommand("cline.fixWithCline", async (range: vscode.Range, diagnostics: vscode.Diagnostic[]) => {
 			const editor = vscode.window.activeTextEditor
 			if (!editor) {
 				return
@@ -427,11 +444,45 @@ export function activate(context: vscode.ExtensionContext) {
 		}),
 	)
 
+	// Register the focusChatInput command handler
+	context.subscriptions.push(
+		vscode.commands.registerCommand("cline.focusChatInput", () => {
+			let visibleWebview = WebviewProvider.getVisibleInstance()
+			if (!visibleWebview) {
+				vscode.commands.executeCommand("claude-dev.SidebarProvider.focus")
+				visibleWebview = WebviewProvider.getSidebarInstance()
+				// showing the extension will call didBecomeVisible which focuses it already
+				// but it doesn't focus if a tab is selected which focusChatInput accounts for
+			}
+
+			visibleWebview?.controller.postMessageToWebview({
+				type: "action",
+				action: "focusChatInput",
+			})
+		}),
+	)
+
+	// Set up test server if in test mode
+	if (IS_TEST === "true") {
+		createTestServer(sidebarWebview)
+	}
+
 	return createClineAPI(outputChannel, sidebarWebview.controller)
 }
 
+// TODO: Find a solution for automatically removing DEV related content from production builds.
+//  This type of code is fine in production to keep. We just will want to remove it from production builds
+//  to bring down built asset sizes.
+//
+// This is a workaround to reload the extension when the source code changes
+// since vscode doesn't support hot reload for extensions
+const { IS_DEV, DEV_WORKSPACE_FOLDER, IS_TEST } = process.env
+
 // This method is called when your extension is deactivated
 export function deactivate() {
+	// Shutdown the test server if it exists
+	shutdownTestServer()
+
 	// Shut down the HTTP server
 	if (httpServerService) {
 		httpServerService.stop().catch((error) => {
@@ -444,14 +495,7 @@ export function deactivate() {
 	Logger.log("Cline extension deactivated")
 }
 
-// TODO: Find a solution for automatically removing DEV related content from production builds.
-//  This type of code is fine in production to keep. We just will want to remove it from production builds
-//  to bring down built asset sizes.
-//
-// This is a workaround to reload the extension when the source code changes
-// since vscode doesn't support hot reload for extensions
-const { IS_DEV, DEV_WORKSPACE_FOLDER } = process.env
-
+// Set up development mode file watcher
 if (IS_DEV && IS_DEV !== "false") {
 	assert(DEV_WORKSPACE_FOLDER, "DEV_WORKSPACE_FOLDER must be set in development")
 	const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(DEV_WORKSPACE_FOLDER, "src/**/*"))
